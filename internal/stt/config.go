@@ -32,6 +32,7 @@ var (
 
 	cartesiaLanguages = map[string]string{
 		"english":    "en",
+		"hindi":      "hi",
 		"spanish":    "es",
 		"french":     "fr",
 		"german":     "de",
@@ -73,4 +74,45 @@ func SelectProvider(language string, cfg ProviderConfig) (Provider, string, erro
 	}
 
 	return nil, "", fmt.Errorf("stt: unsupported language %q", language)
+}
+
+// SelectProviderExplicit creates a provider for the explicitly specified provider name and language.
+func SelectProviderExplicit(providerName, language string, cfg ProviderConfig) (Provider, string, error) {
+	lang := strings.ToLower(strings.TrimSpace(language))
+	if lang == "" {
+		return nil, "", errors.New("stt: language is required")
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(providerName))
+
+	switch provider {
+	case "sarvam":
+		code, ok := sarvamLanguages[lang]
+		if !ok {
+			return nil, "", fmt.Errorf("stt: language %q not supported by Sarvam provider", language)
+		}
+		if cfg.SarvamKey == "" {
+			return nil, "", errors.New("stt: SARVAM_API_KEY missing")
+		}
+		prov := NewSarvamProvider(cfg.SarvamKey, SarvamOptions{
+			Model:              cfg.SarvamModel,
+			HighVADSensitivity: cfg.HighVAD,
+			VADSignals:         cfg.VADSignals,
+		})
+		return prov, code, nil
+
+	case "cartesia":
+		code, ok := cartesiaLanguages[lang]
+		if !ok {
+			return nil, "", fmt.Errorf("stt: language %q not supported by Cartesia provider", language)
+		}
+		if cfg.CartesiaKey == "" {
+			return nil, "", errors.New("stt: CARTESIA_API_KEY missing")
+		}
+		prov := NewCartesiaProvider(cfg.CartesiaKey, CartesiaOptions{})
+		return prov, code, nil
+
+	default:
+		return nil, "", fmt.Errorf("stt: unsupported provider %q (supported: cartesia, sarvam)", providerName)
+	}
 }

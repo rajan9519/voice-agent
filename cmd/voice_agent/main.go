@@ -26,6 +26,7 @@ func main() {
 	var (
 		sourceLanguage        = flag.String("source-language", "english", "Language spoken into the microphone")
 		targetLanguage        = flag.String("target-language", "english", "Language to translate into")
+		sttProvider           = flag.String("stt-provider", "", "STT provider (cartesia|sarvam) - auto-detects if not specified")
 		ttsProvider           = flag.String("tts-provider", "cartesia", "TTS provider (cartesia|sarvam)")
 		ttsVoice              = flag.String("tts-voice", "default", "Voice preset or provider voice ID")
 		ttsLanguage           = flag.String("tts-language", "english", "TTS language preset (Sarvam only)")
@@ -51,7 +52,17 @@ func main() {
 		VADSignals:  !*sttDisableVADSignals,
 	}
 
-	sttProvider, languageCode, err := stt.SelectProvider(*sourceLanguage, sttCfg)
+	var sttProviderInst stt.Provider
+	var languageCode string
+	var err error
+
+	if *sttProvider != "" {
+		// User explicitly specified a provider
+		sttProviderInst, languageCode, err = stt.SelectProviderExplicit(strings.TrimSpace(*sttProvider), *sourceLanguage, sttCfg)
+	} else {
+		// Auto-detect provider based on language
+		sttProviderInst, languageCode, err = stt.SelectProvider(*sourceLanguage, sttCfg)
+	}
 	if err != nil {
 		log.Fatalf("speech provider: %v", err)
 	}
@@ -61,7 +72,7 @@ func main() {
 		log.Fatalf("microphone: %v", err)
 	}
 
-	sttPipeline, err := stt.New(sttProvider, recorder, stt.Options{Language: languageCode})
+	sttPipeline, err := stt.New(sttProviderInst, recorder, stt.Options{Language: languageCode})
 	if err != nil {
 		_ = recorder.Close()
 		log.Fatalf("stt pipeline: %v", err)

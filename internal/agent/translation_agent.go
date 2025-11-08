@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"voiceagent/internal/llm"
 	"voiceagent/internal/stt"
@@ -48,11 +51,45 @@ type TranslationAgent struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	transcripts chan string
+	transcripts chan transcriptPayload
 	wg          sync.WaitGroup
 
 	errOnce sync.Once
 	err     error
+
+	sequenceCounter int64
+}
+
+type transcriptPayload struct {
+	id                 int64
+	text               string
+	partial            bool
+	transcribeDuration time.Duration
+	start              time.Time
+	capturedAt         time.Time
+}
+
+type translationStats struct {
+	Duration        time.Duration
+	Characters      int
+	Segments        int
+	EnqueueDuration time.Duration
+	outputBuilder   strings.Builder
+}
+
+func (s *translationStats) appendOutput(segment string) {
+	if segment == "" {
+		return
+	}
+	s.Characters += len(segment)
+	if s.outputBuilder.Len() > 0 {
+		s.outputBuilder.WriteByte(' ')
+	}
+	s.outputBuilder.WriteString(segment)
+}
+
+func (s *translationStats) OutputText() string {
+	return strings.TrimSpace(s.outputBuilder.String())
 }
 
 // NewTranslationAgent validates dependencies and returns a ready-to-start agent.
@@ -89,7 +126,7 @@ func NewTranslationAgent(
 		translator:  translator,
 		player:      player,
 		opts:        opts,
-		transcripts: make(chan string, opts.TranscriptQueueCapacity),
+		transcripts: make(chan transcriptPayload, opts.TranscriptQueueCapacity),
 	}, nil
 }
 
@@ -105,7 +142,7 @@ func (a *TranslationAgent) Start(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	a.ctx = ctx
 	a.cancel = cancel
-	a.transcripts = make(chan string, a.opts.TranscriptQueueCapacity)
+	a.transcripts = make(chan transcriptPayload, a.opts.TranscriptQueueCapacity)
 
 	if err := a.tts.Start(ctx); err != nil {
 		a.reset()
@@ -213,6 +250,11 @@ func (a *TranslationAgent) transcriptLoop() {
 	results := a.stt.Results()
 	errorsCh := a.stt.Errors()
 
+	var (
+		utteranceStart time.Time
+		currentSeq     int64 = -1
+	)
+
 	for results != nil || errorsCh != nil {
 		select {
 		case <-a.ctx.Done():
@@ -223,30 +265,128 @@ func (a *TranslationAgent) transcriptLoop() {
 				continue
 			}
 			if event.Err != nil {
+				a.debugf("STT provider error: %v", event.Err)
 				a.fail(fmt.Errorf("stt provider: %w", event.Err))
 				continue
 			}
 
-			if !event.IsFinal && !a.opts.UsePartialTranscripts {
+			now := time.Now()
+
+			if event.Type == "transcript" {
+				if !event.IsFinal {
+					if utteranceStart.IsZero() {
+						utteranceStart = now
+					}
+					if currentSeq == -1 {
+						currentSeq = a.nextSequence()
+					}
+
+					text := strings.TrimSpace(event.Text)
+					if !a.opts.UsePartialTranscripts {
+						if text != "" {
+							a.debugf("STT partial ignored (final-only mode): %q", truncate(text, 120))
+						}
+						continue
+					}
+					if text == "" {
+						continue
+					}
+
+					elapsed := now.Sub(utteranceStart)
+					a.debugf(
+						"STT partial #%d provider=%s elapsed=%.2fs text=%q",
+						currentSeq,
+						event.Provider,
+						elapsed.Seconds(),
+						truncate(text, 160),
+					)
+
+					payload := transcriptPayload{
+						id:                 currentSeq,
+						text:               text,
+						partial:            true,
+						transcribeDuration: elapsed,
+						start:              utteranceStart,
+						capturedAt:         now,
+					}
+
+					select {
+					case a.transcripts <- payload:
+					case <-a.ctx.Done():
+						return
+					}
+					continue
+				}
+
+				text := strings.TrimSpace(event.Text)
+				if text == "" {
+					continue
+				}
+
+				if utteranceStart.IsZero() {
+					utteranceStart = now
+				}
+				if currentSeq == -1 {
+					currentSeq = a.nextSequence()
+				}
+
+				duration := now.Sub(utteranceStart)
+				seq := currentSeq
+				if seq == -1 {
+					seq = a.nextSequence()
+				}
+
+				a.debugf(
+					"STT final #%d provider=%s duration=%.2fs text=%q",
+					seq,
+					event.Provider,
+					duration.Seconds(),
+					truncate(text, 240),
+				)
+
+				payload := transcriptPayload{
+					id:                 seq,
+					text:               text,
+					partial:            false,
+					transcribeDuration: duration,
+					start:              utteranceStart,
+					capturedAt:         now,
+				}
+
+				select {
+				case a.transcripts <- payload:
+				case <-a.ctx.Done():
+					return
+				}
+
+				utteranceStart = time.Time{}
+				currentSeq = -1
 				continue
+			}
+
+			if isSpeechStartEvent(event.Type) {
+				if utteranceStart.IsZero() {
+					utteranceStart = now
+				}
+				if currentSeq == -1 {
+					currentSeq = a.nextSequence()
+				}
 			}
 
 			text := strings.TrimSpace(event.Text)
 			if text == "" {
+				a.debugf("STT event %q", event.Type)
 				continue
 			}
 
-			select {
-			case a.transcripts <- text:
-			case <-a.ctx.Done():
-				return
-			}
+			a.debugf("STT event %q: %s", event.Type, truncate(text, 120))
 		case err, ok := <-errorsCh:
 			if !ok {
 				errorsCh = nil
 				continue
 			}
 			if err != nil {
+				a.debugf("Recorder error: %v", err)
 				a.fail(fmt.Errorf("recorder: %w", err))
 			}
 		}
@@ -260,48 +400,82 @@ func (a *TranslationAgent) translationLoop() {
 		select {
 		case <-a.ctx.Done():
 			return
-		case text, ok := <-a.transcripts:
+		case payload, ok := <-a.transcripts:
 			if !ok {
 				return
 			}
-			if err := a.translateAndSpeak(text); err != nil {
+
+			a.debugf(
+				"Translation start #%d partial=%t text=%q",
+				payload.id,
+				payload.partial,
+				truncate(payload.text, 200),
+			)
+
+			stats, err := a.translateAndSpeak(payload)
+			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
 				a.fail(err)
+				a.debugf("Translation error #%d: %v", payload.id, err)
+				continue
 			}
+
+			totalDuration := time.Since(payload.start)
+			if payload.start.IsZero() {
+				totalDuration = time.Since(payload.capturedAt)
+			}
+			overallEstimate := payload.transcribeDuration + stats.Duration
+			a.debugf(
+				"Segment #%d complete partial=%t transcription=%.2fs translation=%.2fs tts_enqueue=%.2fs overall=%.2fs wall=%.2fs input=%q output=%q segments=%d chars=%d",
+				payload.id,
+				payload.partial,
+				payload.transcribeDuration.Seconds(),
+				stats.Duration.Seconds(),
+				stats.EnqueueDuration.Seconds(),
+				overallEstimate.Seconds(),
+				totalDuration.Seconds(),
+				truncate(payload.text, 240),
+				truncate(stats.OutputText(), 240),
+				stats.Segments,
+				stats.Characters,
+			)
 		}
 	}
 }
 
-func (a *TranslationAgent) translateAndSpeak(text string) error {
+func (a *TranslationAgent) translateAndSpeak(payload transcriptPayload) (translationStats, error) {
+	var stats translationStats
+
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	stream, err := a.translator.StreamTranslate(ctx, text, llm.TranslateOptions{
+	stream, err := a.translator.StreamTranslate(ctx, payload.text, llm.TranslateOptions{
 		TargetLanguage: a.opts.TargetLanguage,
 		Model:          a.opts.TranslationModel,
 	})
 	if err != nil {
-		return fmt.Errorf("translate: %w", err)
+		return stats, fmt.Errorf("translate: %w", err)
 	}
 
 	var buffer strings.Builder
+	start := time.Now()
 
 	for stream.Text != nil || stream.Err != nil {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return stats, ctx.Err()
 		case delta, ok := <-stream.Text:
 			if !ok {
 				stream.Text = nil
 				continue
 			}
 			buffer.WriteString(delta)
-			if err := a.flushBuffer(&buffer, false); err != nil {
-				return err
+			if err := a.flushBuffer(payload, &buffer, false, &stats); err != nil {
+				return stats, err
 			}
 		case streamErr, ok := <-stream.Err:
 			if !ok {
@@ -309,15 +483,20 @@ func (a *TranslationAgent) translateAndSpeak(text string) error {
 				continue
 			}
 			if streamErr != nil {
-				return fmt.Errorf("translate stream: %w", streamErr)
+				return stats, fmt.Errorf("translate stream: %w", streamErr)
 			}
 		}
 	}
 
-	return a.flushBuffer(&buffer, true)
+	if err := a.flushBuffer(payload, &buffer, true, &stats); err != nil {
+		return stats, err
+	}
+
+	stats.Duration = time.Since(start)
+	return stats, nil
 }
 
-func (a *TranslationAgent) flushBuffer(buf *strings.Builder, force bool) error {
+func (a *TranslationAgent) flushBuffer(payload transcriptPayload, buf *strings.Builder, force bool, stats *translationStats) error {
 	raw := buf.String()
 	if raw == "" {
 		return nil
@@ -332,8 +511,8 @@ func (a *TranslationAgent) flushBuffer(buf *strings.Builder, force bool) error {
 			end := i + 1
 			segment := strings.TrimSpace(raw[start:end])
 			if segment != "" {
-				if err := a.tts.Enqueue(segment); err != nil {
-					return fmt.Errorf("tts enqueue: %w", err)
+				if err := a.enqueueSegment(payload, segment, stats); err != nil {
+					return err
 				}
 			}
 			start = end
@@ -345,8 +524,8 @@ func (a *TranslationAgent) flushBuffer(buf *strings.Builder, force bool) error {
 	if remainder.Len() >= a.opts.FlushThreshold || (force && remainder.Len() > 0) {
 		segment := strings.TrimSpace(remainder.String())
 		if segment != "" {
-			if err := a.tts.Enqueue(segment); err != nil {
-				return fmt.Errorf("tts enqueue: %w", err)
+			if err := a.enqueueSegment(payload, segment, stats); err != nil {
+				return err
 			}
 		}
 		remainder.Reset()
@@ -354,6 +533,24 @@ func (a *TranslationAgent) flushBuffer(buf *strings.Builder, force bool) error {
 
 	buf.Reset()
 	buf.WriteString(remainder.String())
+	return nil
+}
+
+func (a *TranslationAgent) enqueueSegment(payload transcriptPayload, segment string, stats *translationStats) error {
+	enqueueStart := time.Now()
+	if err := a.tts.Enqueue(segment); err != nil {
+		return fmt.Errorf("tts enqueue: %w", err)
+	}
+	stats.EnqueueDuration += time.Since(enqueueStart)
+	stats.Segments++
+	stats.appendOutput(segment)
+	a.debugf(
+		"TTS enqueue #%d segment=%d chars=%d text=%q",
+		payload.id,
+		stats.Segments,
+		len(segment),
+		truncate(segment, 200),
+	)
 	return nil
 }
 
@@ -367,4 +564,36 @@ func (a *TranslationAgent) fail(err error) {
 			a.cancel()
 		}
 	})
+}
+
+func (a *TranslationAgent) nextSequence() int64 {
+	return atomic.AddInt64(&a.sequenceCounter, 1)
+}
+
+func (a *TranslationAgent) debugf(format string, args ...any) {
+	log.Printf("[agent] "+format, args...)
+}
+
+func isSpeechStartEvent(eventType string) bool {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	if eventType == "" {
+		return false
+	}
+	if strings.Contains(eventType, "speech") && (strings.Contains(eventType, "start") || strings.Contains(eventType, "begin")) {
+		return true
+	}
+	if strings.Contains(eventType, "voice") && strings.Contains(eventType, "start") {
+		return true
+	}
+	return false
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
