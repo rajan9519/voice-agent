@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"voiceagent/internal/tts"
 )
@@ -69,7 +71,7 @@ func main() {
 		log.Fatal("no text provided; pass --text or use --interactive")
 	}
 
-	fmt.Printf("🔊 Synthesizing with %s (%s voice)...\n", strings.Title(providerName), *voiceFlag)
+	fmt.Printf("🔊 Synthesizing with %s (%s voice)...\n", cases.Title(language.English).String(providerName), *voiceFlag)
 	if err := engine.Speak(ctx, text); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("synthesis failed: %v", err)
 	}

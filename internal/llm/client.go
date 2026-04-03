@@ -268,6 +268,43 @@ func (c *Client) StreamTranslate(ctx context.Context, text string, opts Translat
 	return c.Stream(ctx, req)
 }
 
+// ConversationOptions describe how to build a conversation-specific prompt.
+type ConversationOptions struct {
+	Model   string
+	History []Message
+}
+
+// StreamConverse is a convenience helper that issues a single conversational turn.
+// It replies in the same language the user spoke, keeping answers short and natural.
+func (c *Client) StreamConverse(ctx context.Context, text string, opts ConversationOptions) (*StreamResponse, error) {
+	src := strings.TrimSpace(text)
+	if src == "" {
+		return nil, errors.New("converse: input text must not be empty")
+	}
+
+	systemMsg := Message{
+		Role: "system",
+		Content: []MessageContent{
+			{
+				Type: "input_text",
+				Text: "You are a friendly conversational assistant. Always reply in the same language the user is speaking. Keep your answers short and natural — the way a person actually talks, usually just one or two sentences. No bullet points, no long explanations, just a casual human reply.",
+			},
+		},
+	}
+
+	messages := make([]Message, 0, 1+len(opts.History)+1)
+	messages = append(messages, systemMsg)
+	messages = append(messages, opts.History...)
+	messages = append(messages, Message{
+		Role: "user",
+		Content: []MessageContent{
+			{Type: "input_text", Text: src},
+		},
+	})
+
+	return c.Stream(ctx, Request{Model: opts.Model, Messages: messages})
+}
+
 type responsesRequest struct {
 	Model  string    `json:"model"`
 	Input  []Message `json:"input"`

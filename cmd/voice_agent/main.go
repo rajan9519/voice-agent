@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"voiceagent/internal/agent"
 	"voiceagent/internal/llm"
@@ -20,12 +22,19 @@ import (
 	"voiceagent/internal/tts"
 )
 
+// voiceAgent is the common interface implemented by both agent types.
+type voiceAgent interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+}
+
 func main() {
 	_ = godotenv.Load()
 
 	var (
+		mode                  = flag.String("mode", "conversation", "Agent mode: conversation or translation")
 		sourceLanguage        = flag.String("source-language", "english", "Language spoken into the microphone")
-		targetLanguage        = flag.String("target-language", "english", "Language to translate into")
+		targetLanguage        = flag.String("target-language", "english", "Language to translate into (translation mode only)")
 		sttProvider           = flag.String("stt-provider", "", "STT provider (cartesia|sarvam) - auto-detects if not specified")
 		ttsProvider           = flag.String("tts-provider", "cartesia", "TTS provider (cartesia|sarvam)")
 		ttsVoice              = flag.String("tts-voice", "default", "Voice preset or provider voice ID")
@@ -35,11 +44,16 @@ func main() {
 		sttSarvamModel        = flag.String("stt-sarvam-model", "saarika:v2.5", "Sarvam STT model version")
 		sttDisableHighVAD     = flag.Bool("stt-disable-high-vad", false, "Disable high VAD sensitivity for Sarvam STT")
 		sttDisableVADSignals  = flag.Bool("stt-disable-vad-signals", false, "Disable Sarvam VAD speech markers")
-		usePartialTranscripts = flag.Bool("use-partials", false, "Forward partial STT transcripts to the translator")
+		usePartialTranscripts = flag.Bool("use-partials", false, "Forward partial STT transcripts to the agent")
 		flushThreshold        = flag.Int("flush-threshold", 120, "Minimum characters before forcing a TTS flush")
-		translateModel        = flag.String("translate-model", "", "Override the translation model identifier")
+		llmModel              = flag.String("model", "", "Override the LLM model identifier")
 	)
 	flag.Parse()
+
+	*mode = strings.TrimSpace(strings.ToLower(*mode))
+	if *mode != "conversation" && *mode != "translation" {
+		log.Fatalf("invalid --mode %q: must be conversation or translation", *mode)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -90,40 +104,58 @@ func main() {
 		log.Fatalf("audio output: %v", err)
 	}
 
-	translator, err := llm.New(llm.Config{
-		DefaultModel: strings.TrimSpace(*translateModel),
+	llmClient, err := llm.New(llm.Config{
+		DefaultModel: strings.TrimSpace(*llmModel),
 	})
 	if err != nil {
 		_ = player.Close()
 		_ = recorder.Close()
-		log.Fatalf("translator client: %v", err)
+		log.Fatalf("llm client: %v", err)
 	}
 
-	agentOpts := agent.Options{
-		TargetLanguage:        strings.TrimSpace(*targetLanguage),
-		TranslationModel:      strings.TrimSpace(*translateModel),
-		FlushThreshold:        *flushThreshold,
-		UsePartialTranscripts: *usePartialTranscripts,
-	}
+	var va voiceAgent
+	var agentLabel string
 
-	voiceAgent, err := agent.NewTranslationAgent(sttPipeline, ttsEngine, translator, player, agentOpts)
+	switch *mode {
+	case "translation":
+		va, err = agent.NewTranslationAgent(sttPipeline, ttsEngine, llmClient, player, agent.TranslationOptions{
+			TargetLanguage:        strings.TrimSpace(*targetLanguage),
+			TranslationModel:      strings.TrimSpace(*llmModel),
+			FlushThreshold:        *flushThreshold,
+			UsePartialTranscripts: *usePartialTranscripts,
+		})
+		agentLabel = "Real-Time Translation Agent"
+	default: // "conversation"
+		va, err = agent.NewConversationAgent(sttPipeline, ttsEngine, llmClient, player, agent.ConversationOptions{
+			ConversationModel:       strings.TrimSpace(*llmModel),
+			FlushThreshold:          *flushThreshold,
+			TranscriptQueueCapacity: 5,
+			UsePartialTranscripts:   *usePartialTranscripts,
+		})
+		agentLabel = "Real-Time Conversation Agent"
+	}
 	if err != nil {
 		_ = player.Close()
 		_ = recorder.Close()
 		log.Fatalf("configure agent: %v", err)
 	}
 
-	if err := voiceAgent.Start(ctx); err != nil {
-		_ = voiceAgent.Stop(context.Background())
+	if err := va.Start(ctx); err != nil {
+		_ = va.Stop(context.Background())
 		_ = recorder.Close()
 		log.Fatalf("start agent: %v", err)
 	}
 
 	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("🎧  Real-Time Translation Agent")
+	fmt.Printf("🎧  %s\n", agentLabel)
 	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("Listening in %s → speaking in %s.\n", strings.Title(strings.TrimSpace(*sourceLanguage)), strings.Title(agentOpts.TargetLanguage))
-	fmt.Println("Press Ctrl+C to stop.\n")
+	titleCaser := cases.Title(language.English)
+	fmt.Printf("Listening in %s", titleCaser.String(strings.TrimSpace(*sourceLanguage)))
+	if *mode == "translation" {
+		fmt.Printf(" → speaking in %s", titleCaser.String(strings.TrimSpace(*targetLanguage)))
+	}
+	fmt.Println(".")
+	fmt.Println("Press Ctrl+C to stop.")
 
 	<-ctx.Done()
 
@@ -131,7 +163,7 @@ func main() {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := voiceAgent.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := va.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("agent shutdown error: %v\n", err)
 		os.Exit(1)
 	}
