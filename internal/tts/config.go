@@ -15,12 +15,51 @@ var (
 		"conversational-man": "2ee87190-8f84-4925-97da-e52547f9462c",
 	}
 
+	// bulbul:v2 speakers
+	sarvamVoicesV2 = map[string]string{
+		"default":  "anushka",
+		"anushka":  "anushka",
+		"abhilash": "abhilash",
+		"manisha":  "manisha",
+		"vidya":    "vidya",
+		"arya":     "arya",
+		"karun":    "karun",
+		"hitesh":   "hitesh",
+	}
+
+	// bulbul:v3 speakers
+	sarvamVoicesV3 = map[string]string{
+		"default":  "aditya",
+		"aditya":   "aditya",
+		"ritu":     "ritu",
+		"priya":    "priya",
+		"neha":     "neha",
+		"rahul":    "rahul",
+		"pooja":    "pooja",
+		"rohan":    "rohan",
+		"simran":   "simran",
+		"kavya":    "kavya",
+		"amit":     "amit",
+		"dev":      "dev",
+		"ishita":   "ishita",
+		"shreya":   "shreya",
+		"ratan":    "ratan",
+		"varun":    "varun",
+		"manan":    "manan",
+		"sumit":    "sumit",
+		"roopa":    "roopa",
+		"kabir":    "kabir",
+		"aayan":    "aayan",
+		"shubh":    "shubh",
+		"ashutosh": "ashutosh",
+		"advait":   "advait",
+		"amelia":   "amelia",
+		"sophia":   "sophia",
+	}
+
+	// sarvamVoices kept as a combined lookup for backward compatibility
 	sarvamVoices = map[string]string{
-		"default": "anushka",
-		"anushka": "anushka",
-		"meera":   "meera",
-		"arvind":  "arvind",
-		"raghav":  "raghav",
+		"default": "aditya",
 	}
 
 	sarvamLanguages = map[string]string{
@@ -48,9 +87,22 @@ func ResolveCartesiaVoice(name string) string {
 }
 
 // ResolveSarvamVoice converts friendly names to Sarvam voice IDs.
-func ResolveSarvamVoice(name string) string {
+// It selects from the correct speaker set based on the model version.
+func ResolveSarvamVoice(name string, modelID string) string {
 	key := strings.ToLower(strings.TrimSpace(name))
-	if id, ok := sarvamVoices[key]; ok {
+	voices := sarvamVoicesV2
+	if modelID == "bulbul:v3" {
+		voices = sarvamVoicesV3
+	}
+	if id, ok := voices[key]; ok {
+		return id
+	}
+	// Fallback: check the other model's voices
+	fallback := sarvamVoicesV3
+	if modelID == "bulbul:v3" {
+		fallback = sarvamVoicesV2
+	}
+	if id, ok := fallback[key]; ok {
 		return id
 	}
 	return name

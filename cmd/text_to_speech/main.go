@@ -106,7 +106,7 @@ func buildEngine(
 			return nil, nil, fmt.Errorf("SARVAM_API_KEY not set")
 		}
 		languageCode := tts.ResolveSarvamLanguage(language)
-		voiceID := tts.ResolveSarvamVoice(voice)
+		voiceID := tts.ResolveSarvamVoice(voice, model)
 		provider := tts.NewSarvamProvider(apiKey, sampleRate, languageCode, model)
 		engine, shutdown, err := startEngine(ctx, provider, tts.Options{
 			SampleRate: sampleRate,

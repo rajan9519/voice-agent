@@ -190,7 +190,7 @@ func configureTTSEngine(providerName, voice, language, model string, sampleRate 
 		if apiKey == "" {
 			return nil, errors.New("tts: SARVAM_API_KEY not set")
 		}
-		voiceID := tts.ResolveSarvamVoice(voice)
+		voiceID := tts.ResolveSarvamVoice(voice, model)
 		languageCode := tts.ResolveSarvamLanguage(language)
 		provider := tts.NewSarvamProvider(apiKey, sampleRate, languageCode, model)
 		return tts.New(provider, tts.Options{

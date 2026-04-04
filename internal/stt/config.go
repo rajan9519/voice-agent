@@ -28,6 +28,7 @@ var (
 		"punjabi":    "pa-IN",
 		"odia":       "od-IN",
 		"english-in": "en-IN",
+		"english": "en-IN",
 	}
 
 	cartesiaLanguages = map[string]string{

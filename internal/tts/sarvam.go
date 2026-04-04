@@ -28,6 +28,7 @@ type SarvamProvider struct {
 	language   string
 	sampleRate int
 	baseURL    string
+	speaker    string
 }
 
 type sarvamEnvelope struct {
@@ -38,14 +39,20 @@ type sarvamEnvelope struct {
 type sarvamAudioData struct {
 	ContentType string `json:"content_type"`
 	Audio       string `json:"audio"`
+	RequestID   string `json:"request_id,omitempty"`
 }
 
 type sarvamEventData struct {
 	EventType string `json:"event_type"`
+	Message   string `json:"message,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type sarvamErrorData struct {
-	Message string `json:"message"`
+	Message   string         `json:"message"`
+	Code      int            `json:"code,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
+	RequestID string         `json:"request_id,omitempty"`
 }
 
 // NewSarvamProvider constructs a provider with sane defaults.
@@ -218,14 +225,56 @@ func (s *SarvamProvider) configure(ctx context.Context, conn *websocket.Conn, re
 	if language == "" {
 		language = s.language
 	}
+
+	model := req.ModelID
+	if model == "" {
+		model = s.modelID
+	}
+
+	speaker := req.VoiceID
+	if speaker == "" {
+		speaker = s.speaker
+	}
+
+	sampleRate := req.SampleRate
+	if sampleRate == 0 {
+		sampleRate = s.sampleRate
+	}
+	// Apply model-specific default sample rates
+	if sampleRate == 0 {
+		if model == "bulbul:v3" {
+			sampleRate = 24000
+		} else {
+			sampleRate = 22050
+		}
+	}
+
+	data := map[string]any{
+		"target_language_code": language,
+		"speaker":              speaker,
+		"speech_sample_rate":   fmt.Sprintf("%d", sampleRate),
+		"output_audio_codec":   "mp3",
+	}
+
+	if model != "" {
+		data["model"] = model
+	}
+
+	// Model-specific parameters
+	if model == "bulbul:v3" {
+		data["temperature"] = 0.6
+		// bulbul:v3 always has preprocessing enabled
+	} else {
+		// bulbul:v2 supports pitch and loudness
+		data["pitch"] = 0.0
+		data["loudness"] = 1.0
+		data["enable_preprocessing"] = false
+	}
+	data["pace"] = 1.0
+
 	payload := map[string]any{
 		"type": "config",
-		"data": map[string]any{
-			"target_language_code": language,
-			"speaker":              req.VoiceID,
-			"speech_sample_rate":   req.SampleRate,
-			"output_audio_codec":   "wav",
-		},
+		"data": data,
 	}
 	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
