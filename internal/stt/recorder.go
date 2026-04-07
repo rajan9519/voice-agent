@@ -34,6 +34,11 @@ func (c AudioChunk) Release() {
 	c.pool.Put(c.data[:cap(c.data)])
 }
 
+// NewAudioChunk creates an AudioChunk from raw PCM bytes without pool management.
+func NewAudioChunk(data []byte) AudioChunk {
+	return AudioChunk{data: data}
+}
+
 // Recorder emits PCM audio suitable for streaming to the provider.
 type Recorder interface {
 	Start(ctx context.Context) (<-chan AudioChunk, <-chan error, error)

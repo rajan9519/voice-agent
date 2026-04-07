@@ -253,7 +253,7 @@ func (s *SarvamProvider) configure(ctx context.Context, conn *websocket.Conn, re
 		"target_language_code": language,
 		"speaker":              speaker,
 		"speech_sample_rate":   fmt.Sprintf("%d", sampleRate),
-		"output_audio_codec":   "mp3",
+		"output_audio_codec":   "wav",
 	}
 
 	if model != "" {
