@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Voice Agent</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-muted: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-hover: #7c6ef7;
+    --user-bubble: #2d3250;
+    --agent-bubble: #1e2a3a;
+    --danger: #e74c3c;
+    --success: #2ecc71;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  #status-badge {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--surface2);
+    color: var(--text-muted);
+  }
+
+  #status-badge.connected {
+    background: rgba(46, 204, 113, 0.15);
+    color: var(--success);
+  }
+
+  #status-badge.error {
+    background: rgba(231, 76, 60, 0.15);
+    color: var(--danger);
+  }
+
+  .app-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* --- Sidebar --- */
+  .sidebar {
+    width: 300px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    padding: 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .sidebar h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .field select, .field input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    outline: none;
+  }
+
+  .field select:focus, .field input:focus {
+    border-color: var(--accent);
+  }
+
+  .field-row {
+    display: flex;
+    gap: 10px;
+  }
+
+  .field-row .field { flex: 1; }
+
+  .toggle-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+  }
+
+  .toggle-field label {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .toggle {
+    position: relative;
+    width: 40px;
+    height: 22px;
+  }
+
+  .toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle .slider {
+    position: absolute;
+    inset: 0;
+    background: var(--surface2);
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .toggle .slider::before {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+  }
+
+  .toggle input:checked + .slider {
+    background: var(--accent);
+  }
+
+  .toggle input:checked + .slider::before {
+    transform: translateX(18px);
+    background: white;
+  }
+
+  #target-lang-field {
+    display: none;
+  }
+
+  /* --- Chat area --- */
+  .chat-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  #chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .message {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    word-wrap: break-word;
+  }
+
+  .message.user {
+    align-self: flex-end;
+    background: var(--user-bubble);
+    border-bottom-right-radius: 4px;
+  }
+
+  .message.agent {
+    align-self: flex-start;
+    background: var(--agent-bubble);
+    border-bottom-left-radius: 4px;
+  }
+
+  .message .role {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .message.partial {
+    opacity: 0.65;
+  }
+
+  .system-msg {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 4px 0;
+  }
+
+  /* --- Bottom bar --- */
+  .bottom-bar {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: white;
+  }
+
+  .btn-primary:hover { background: var(--accent-hover); }
+
+  .btn-danger {
+    background: var(--danger);
+    color: white;
+  }
+
+  .btn-danger:hover { background: #c0392b; }
+
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  #mic-indicator {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--success);
+  }
+
+  #mic-indicator.active { display: flex; }
+
+  .pulse-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  #volume-meter {
+    width: 120px;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  #volume-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--success);
+    transition: width 0.1s;
+    border-radius: 3px;
+  }
+
+  .spacer { flex: 1; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 768px) {
+    .app-body { flex-direction: column; }
+    .sidebar {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      max-height: 40vh;
+    }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Voice Agent</h1>
+  <span id="status-badge">Disconnected</span>
+</header>
+
+<div class="app-body">
+  <!-- Sidebar config -->
+  <aside class="sidebar">
+    <h2>Session Config</h2>
+
+    <div class="field">
+      <label>Server URL</label>
+      <input type="text" id="cfg-url" value="ws://localhost:8080/ws" />
+    </div>
+
+    <div class="field">
+      <label>Mode</label>
+      <select id="cfg-mode">
+        <option value="conversation">Conversation</option>
+        <option value="translation">Translation</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Source Language</label>
+      <select id="cfg-source-lang">
+        <option value="english">English</option>
+        <option value="hindi">Hindi</option>
+        <option value="bengali">Bengali</option>
+        <option value="kannada">Kannada</option>
+        <option value="malayalam">Malayalam</option>
+        <option value="marathi">Marathi</option>
+        <option value="tamil">Tamil</option>
+        <option value="telugu">Telugu</option>
+        <option value="gujarati">Gujarati</option>
+        <option value="punjabi">Punjabi</option>
+        <option value="odia">Odia</option>
+      </select>
+    </div>
+
+    <div class="field" id="target-lang-field">
+      <label>Target Language</label>
+      <select id="cfg-target-lang">
+        <option value="english">English</option>
+        <option value="hindi">Hindi</option>
+        <option value="bengali">Bengali</option>
+        <option value="kannada">Kannada</option>
+        <option value="malayalam">Malayalam</option>
+        <option value="marathi">Marathi</option>
+        <option value="tamil">Tamil</option>
+        <option value="telugu">Telugu</option>
+        <option value="gujarati">Gujarati</option>
+        <option value="punjabi">Punjabi</option>
+        <option value="odia">Odia</option>
+      </select>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label>STT Provider</label>
+        <select id="cfg-stt">
+          <option value="">Auto-detect</option>
+          <option value="cartesia">Cartesia</option>
+          <option value="sarvam">Sarvam</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>TTS Provider</label>
+        <select id="cfg-tts">
+          <option value="cartesia">Cartesia</option>
+          <option value="sarvam">Sarvam</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>TTS Voice</label>
+      <select id="cfg-voice">
+        <optgroup label="Cartesia" id="voice-cartesia">
+          <option value="default">Default</option>
+          <option value="british-lady">British Lady</option>
+          <option value="barbershop-man">Barbershop Man</option>
+          <option value="calm-lady">Calm Lady</option>
+          <option value="friendly-guy">Friendly Guy</option>
+          <option value="enthusiastic-lady">Enthusiastic Lady</option>
+          <option value="professional-woman">Professional Woman</option>
+          <option value="storyteller">Storyteller</option>
+          <option value="conversational-man">Conversational Man</option>
+        </optgroup>
+        <optgroup label="Sarvam v2" id="voice-sarvam-v2">
+          <option value="anushka">Anushka (v2 Default)</option>
+          <option value="abhilash">Abhilash</option>
+          <option value="manisha">Manisha</option>
+          <option value="vidya">Vidya</option>
+          <option value="arya">Arya</option>
+          <option value="karun">Karun</option>
+          <option value="hitesh">Hitesh</option>
+        </optgroup>
+        <optgroup label="Sarvam v3" id="voice-sarvam-v3">
+          <option value="aditya">Aditya (v3 Default)</option>
+          <option value="ritu">Ritu</option>
+          <option value="priya">Priya</option>
+          <option value="neha">Neha</option>
+          <option value="rahul">Rahul</option>
+          <option value="pooja">Pooja</option>
+          <option value="rohan">Rohan</option>
+          <option value="simran">Simran</option>
+          <option value="kavya">Kavya</option>
+          <option value="shubh">Shubh</option>
+          <option value="amelia">Amelia</option>
+          <option value="sophia">Sophia</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>LLM Model (optional)</label>
+      <input type="text" id="cfg-model" placeholder="e.g. gpt-4o-mini" />
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label>TTS Sample Rate</label>
+        <select id="cfg-sample-rate">
+          <option value="22050">22050</option>
+          <option value="24000">24000</option>
+          <option value="16000">16000</option>
+          <option value="44100">44100</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Flush Threshold</label>
+        <input type="number" id="cfg-flush" value="120" min="0" />
+      </div>
+    </div>
+
+    <div class="toggle-field">
+      <label>Use Partial Transcripts</label>
+      <div class="toggle">
+        <input type="checkbox" id="cfg-partials" />
+        <span class="slider"></span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Chat -->
+  <main class="chat-area">
+    <div id="chat-messages">
+      <div class="system-msg">Configure settings and press Start to begin.</div>
+    </div>
+
+    <div class="bottom-bar">
+      <button class="btn btn-primary" id="btn-start">Start Session</button>
+      <button class="btn btn-danger" id="btn-stop" disabled>Stop</button>
+      <div id="mic-indicator">
+        <div class="pulse-dot"></div>
+        <span>Listening</span>
+        <div id="volume-meter"><div id="volume-bar"></div></div>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ──────────────────────────────────────────
+// State
+// ──────────────────────────────────────────
+let ws = null;
+let mediaStream = null;
+let audioWorkletNode = null;
+let audioCtxCapture = null;
+let audioCtxPlayback = null;
+let playbackSampleRate = 22050;
+
+// Track in-progress (partial) messages so we can update them in place.
+let partialUserEl = null;
+let partialAgentEl = null;
+
+// ──────────────────────────────────────────
+// DOM refs
+// ──────────────────────────────────────────
+const $status   = document.getElementById('status-badge');
+const $chat     = document.getElementById('chat-messages');
+const $btnStart = document.getElementById('btn-start');
+const $btnStop  = document.getElementById('btn-stop');
+const $mic      = document.getElementById('mic-indicator');
+const $volBar   = document.getElementById('volume-bar');
+const $mode     = document.getElementById('cfg-mode');
+const $targetF  = document.getElementById('target-lang-field');
+
+// Show/hide target language based on mode.
+$mode.addEventListener('change', () => {
+  $targetF.style.display = $mode.value === 'translation' ? 'flex' : 'none';
+});
+
+// ──────────────────────────────────────────
+// Session lifecycle
+// ──────────────────────────────────────────
+$btnStart.addEventListener('click', startSession);
+$btnStop.addEventListener('click', stopSession);
+
+async function startSession() {
+  $btnStart.disabled = true;
+
+  try {
+    // Acquire mic AND create AudioContext inside the click handler (user gesture)
+    // so the browser allows both getUserMedia and AudioContext.resume().
+    await initMicrophone();
+
+    // Connect WebSocket.
+    const url = document.getElementById('cfg-url').value;
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      setStatus('connected', 'Connected');
+      sendSessionStart();
+    };
+
+    ws.onmessage = onWSMessage;
+    ws.onclose = () => {
+      setStatus('', 'Disconnected');
+      teardown();
+    };
+    ws.onerror = () => {
+      setStatus('error', 'Connection error');
+      teardown();
+    };
+  } catch (e) {
+    appendSystem('Error: ' + e.message);
+    teardown();
+  }
+}
+
+function sendSessionStart() {
+  playbackSampleRate = parseInt(document.getElementById('cfg-sample-rate').value) || 22050;
+
+  const config = {
+    mode:            document.getElementById('cfg-mode').value,
+    source_language: document.getElementById('cfg-source-lang').value,
+    target_language: document.getElementById('cfg-target-lang').value,
+    stt_provider:    document.getElementById('cfg-stt').value,
+    tts_provider:    document.getElementById('cfg-tts').value,
+    tts_voice:       document.getElementById('cfg-voice').value,
+    tts_sample_rate: playbackSampleRate,
+    model:           document.getElementById('cfg-model').value,
+    flush_threshold: parseInt(document.getElementById('cfg-flush').value) || 120,
+    use_partials:    document.getElementById('cfg-partials').checked,
+  };
+
+  ws.send(JSON.stringify({ type: 'session.start', config }));
+}
+
+function stopSession() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'session.end' }));
+    ws.close();
+  }
+  teardown();
+}
+
+function teardown() {
+  if (audioWorkletNode) { audioWorkletNode.disconnect(); audioWorkletNode = null; }
+  if (audioCtxCapture) { audioCtxCapture.close(); audioCtxCapture = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  ws = null;
+  partialUserEl = null;
+  partialAgentEl = null;
+  $btnStart.disabled = false;
+  $btnStop.disabled = true;
+  $mic.classList.remove('active');
+}
+
+// ──────────────────────────────────────────
+// WebSocket message handler
+// ──────────────────────────────────────────
+function onWSMessage(evt) {
+  if (evt.data instanceof ArrayBuffer) {
+    playAudio(evt.data);
+    return;
+  }
+
+  let msg;
+  try { msg = JSON.parse(evt.data); } catch { return; }
+
+  switch (msg.type) {
+    case 'session.started':
+      appendSystem('Session started — speak now.');
+      $btnStop.disabled = false;
+      beginStreaming();
+      break;
+
+    case 'transcript':
+      handleTranscript(msg.text, msg.is_final);
+      break;
+
+    case 'reply':
+      handleReply(msg.text, msg.is_final);
+      break;
+
+    case 'error':
+      appendSystem('⚠ Error: ' + msg.message);
+      break;
+  }
+}
+
+// ──────────────────────────────────────────
+// Chat UI helpers
+// ──────────────────────────────────────────
+function appendBubble(role, text, isPartial) {
+  const el = document.createElement('div');
+  el.className = `message ${role}` + (isPartial ? ' partial' : '');
+  el.innerHTML = `<div class="role">${role === 'user' ? 'You' : 'Agent'}</div><div class="text"></div>`;
+  el.querySelector('.text').textContent = text;
+  $chat.appendChild(el);
+  $chat.scrollTop = $chat.scrollHeight;
+  return el;
+}
+
+function updateBubble(el, text, isFinal) {
+  if (!el) return;
+  el.querySelector('.text').textContent = text;
+  if (isFinal) el.classList.remove('partial');
+  $chat.scrollTop = $chat.scrollHeight;
+}
+
+function handleTranscript(text, isFinal) {
+  if (!text) return;
+  if (partialUserEl && !isFinal) {
+    updateBubble(partialUserEl, text, false);
+  } else if (partialUserEl && isFinal) {
+    updateBubble(partialUserEl, text, true);
+    partialUserEl = null;
+  } else if (!isFinal) {
+    partialUserEl = appendBubble('user', text, true);
+  } else {
+    appendBubble('user', text, false);
+  }
+}
+
+function handleReply(text, isFinal) {
+  if (!text) return;
+  if (partialAgentEl && !isFinal) {
+    // Append new text to existing partial.
+    const cur = partialAgentEl.querySelector('.text').textContent;
+    updateBubble(partialAgentEl, cur + text, false);
+  } else if (partialAgentEl && isFinal) {
+    const cur = partialAgentEl.querySelector('.text').textContent;
+    updateBubble(partialAgentEl, cur + text, true);
+    partialAgentEl = null;
+  } else if (!isFinal) {
+    partialAgentEl = appendBubble('agent', text, true);
+  } else {
+    appendBubble('agent', text, false);
+  }
+}
+
+function appendSystem(text) {
+  const el = document.createElement('div');
+  el.className = 'system-msg';
+  el.textContent = text;
+  $chat.appendChild(el);
+  $chat.scrollTop = $chat.scrollHeight;
+}
+
+function setStatus(cls, text) {
+  $status.className = cls;
+  $status.textContent = text;
+}
+
+// ──────────────────────────────────────────
+// Microphone capture → 16-bit PCM → WebSocket
+// ──────────────────────────────────────────
+
+// Phase 1: called inside the click handler (user gesture) so that
+// getUserMedia and AudioContext.resume() are both permitted.
+async function initMicrophone() {
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      sampleRate: 16000,
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    }
+  });
+
+  audioCtxCapture = new AudioContext({ sampleRate: 16000 });
+  // Explicitly resume — some browsers start AudioContext suspended.
+  if (audioCtxCapture.state === 'suspended') {
+    await audioCtxCapture.resume();
+  }
+
+  // Register the PCM worklet processor inline via a blob.
+  const processorCode = `
+    class PCMProcessor extends AudioWorkletProcessor {
+      process(inputs) {
+        const input = inputs[0];
+        if (input.length > 0 && input[0].length > 0) {
+          const float32 = input[0];
+          const int16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            let s = float32[i];
+            s = s < -1 ? -1 : s > 1 ? 1 : s;
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          this.port.postMessage(int16.buffer, [int16.buffer]);
+        }
+        return true;
+      }
+    }
+    registerProcessor('pcm-processor', PCMProcessor);
+  `;
+  const blob = new Blob([processorCode], { type: 'application/javascript' });
+  const blobUrl = URL.createObjectURL(blob);
+  await audioCtxCapture.audioWorklet.addModule(blobUrl);
+  URL.revokeObjectURL(blobUrl);
+
+  appendSystem('Microphone ready.');
+}
+
+// Phase 2: called when session.started is received — wire up the audio graph
+// and start sending PCM to the WebSocket.
+function beginStreaming() {
+  if (!audioCtxCapture || !mediaStream) {
+    appendSystem('Microphone not initialised.');
+    return;
+  }
+
+  const source = audioCtxCapture.createMediaStreamSource(mediaStream);
+  audioWorkletNode = new AudioWorkletNode(audioCtxCapture, 'pcm-processor');
+
+  // Volume meter.
+  const analyser = audioCtxCapture.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+  function updateVolume() {
+    if (!audioCtxCapture) return;
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+    const avg = sum / dataArray.length;
+    $volBar.style.width = Math.min(100, avg / 128 * 100).toFixed(0) + '%';
+    requestAnimationFrame(updateVolume);
+  }
+  updateVolume();
+
+  audioWorkletNode.port.onmessage = (e) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(e.data);
+    }
+  };
+
+  source.connect(audioWorkletNode);
+  audioWorkletNode.connect(audioCtxCapture.destination); // keeps node alive
+
+  $mic.classList.add('active');
+  appendSystem('Microphone streaming.');
+}
+
+// ──────────────────────────────────────────
+// Audio playback — float32 LE PCM from server
+// ──────────────────────────────────────────
+function ensurePlaybackCtx() {
+  if (!audioCtxPlayback || audioCtxPlayback.state === 'closed') {
+    audioCtxPlayback = new AudioContext({ sampleRate: playbackSampleRate });
+  }
+  if (audioCtxPlayback.state === 'suspended') {
+    audioCtxPlayback.resume();
+  }
+  return audioCtxPlayback;
+}
+
+let nextPlayTime = 0;
+
+function playAudio(arrayBuffer) {
+  const ctx = ensurePlaybackCtx();
+  const float32 = new Float32Array(arrayBuffer);
+  if (float32.length === 0) return;
+
+  const audioBuffer = ctx.createBuffer(1, float32.length, playbackSampleRate);
+  audioBuffer.getChannelData(0).set(float32);
+
+  const source = ctx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(ctx.destination);
+
+  // Schedule sequentially so chunks don't overlap.
+  const now = ctx.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now;
+  source.start(nextPlayTime);
+  nextPlayTime += audioBuffer.duration;
+}
+</script>
+</body>
+</html>
