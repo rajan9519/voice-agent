@@ -636,6 +636,12 @@ function onWSMessage(evt) {
       handleReply(msg.text, msg.is_final);
       break;
 
+    case 'session.closed':
+      appendSystem('Session closed: ' + (msg.message || 'connection closed by server'));
+      if (ws) { ws.close(); }
+      teardown();
+      break;
+
     case 'error':
       appendSystem('⚠ Error: ' + msg.message);
       break;

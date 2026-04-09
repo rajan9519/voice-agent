@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,6 +26,8 @@ type voiceAgent interface {
 	Stop(ctx context.Context) error
 }
 
+const idleTimeout = 2 * time.Minute
+
 // Session manages a single WebSocket voice session.
 type Session struct {
 	conn *websocket.Conn
@@ -40,6 +43,10 @@ type Session struct {
 
 	agent    voiceAgent
 	recorder *WebSocketRecorder
+
+	// lastActivity tracks the last time meaningful conversational activity
+	// occurred (transcript or reply). Stored as unix nanoseconds.
+	lastActivity atomic.Int64
 }
 
 // HandleConnection runs the full lifecycle of a WebSocket session.
@@ -55,6 +62,7 @@ func HandleConnection(parent context.Context, conn *websocket.Conn) {
 	}
 
 	defer s.cleanup()
+	go s.idleWatcher()
 	s.readPump()
 }
 
@@ -218,10 +226,10 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
 	case "translation":
 		va, err = agent.NewTranslationAgent(sttPipeline, ttsEngine, llmClient, player, agent.TranslationOptions{
-			TargetLanguage:          strings.TrimSpace(cfg.TargetLanguage),
-			TranslationModel:       strings.TrimSpace(cfg.Model),
-			FlushThreshold:          cfg.FlushThreshold,
-			UsePartialTranscripts:   cfg.UsePartials,
+			TargetLanguage:        strings.TrimSpace(cfg.TargetLanguage),
+			TranslationModel:      strings.TrimSpace(cfg.Model),
+			FlushThreshold:        cfg.FlushThreshold,
+			UsePartialTranscripts: cfg.UsePartials,
 		})
 	default:
 		va, err = agent.NewConversationAgent(sttPipeline, ttsEngine, llmClient, player, agent.ConversationOptions{
@@ -243,8 +251,37 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 	}
 
 	s.agent = va
+	s.lastActivity.Store(time.Now().UnixNano())
 	s.sendJSON(ServerEvent{Type: TypeSessionStarted})
 	s.logf("session started mode=%s lang=%s", cfg.Mode, cfg.SourceLanguage)
+}
+
+// idleWatcher closes the session if there is no meaningful conversational
+// activity (transcript or reply) for idleTimeout.
+func (s *Session) idleWatcher() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			last := s.lastActivity.Load()
+			if last == 0 {
+				// Session hasn't started yet; don't count idle time.
+				continue
+			}
+			if time.Since(time.Unix(0, last)) > idleTimeout {
+				s.logf("idle timeout: no meaningful activity for %v, closing connection", idleTimeout)
+				s.sendJSON(ServerEvent{
+					Type:    TypeSessionClosed,
+					Message: "connection closed due to inactivity",
+				})
+				s.cancel()
+				return
+			}
+		}
+	}
 }
 
 // onAgentEvent is the EventCallback wired into the conversation agent.
@@ -252,8 +289,10 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 func (s *Session) onAgentEvent(eventType string, text string, isFinal bool) {
 	switch eventType {
 	case "transcript":
+		s.lastActivity.Store(time.Now().UnixNano())
 		s.sendJSON(ServerEvent{Type: TypeTranscript, Text: text, IsFinal: isFinal})
 	case "reply":
+		s.lastActivity.Store(time.Now().UnixNano())
 		s.sendJSON(ServerEvent{Type: TypeReply, Text: text, IsFinal: isFinal})
 	}
 }

@@ -9,6 +9,7 @@ const (
 // Server → Client message types.
 const (
 	TypeSessionStarted = "session.started"
+	TypeSessionClosed  = "session.closed"
 	TypeTranscript     = "transcript"
 	TypeReply          = "reply"
 	TypeError          = "error"
