@@ -62,6 +62,8 @@ func (s *sarvamProvider) Connect(ctx context.Context, language string) error {
 	params.Set("sample_rate", fmt.Sprintf("%d", sampleRate))
 	if s.opts.HighVADSensitivity {
 		params.Set("high_vad_sensitivity", "true")
+	} else {
+		params.Set("high_vad_sensitivity", "false")
 	}
 	if s.opts.VADSignals {
 		params.Set("vad_signals", "true")

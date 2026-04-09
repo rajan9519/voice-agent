@@ -109,8 +109,8 @@ func main() {
 
 	languageFlag := flag.String("language", "english", "Language for transcription")
 	sarvamModel := flag.String("sarvam-model", "saarika:v2.5", "Sarvam AI model version")
-	disableHighVAD := flag.Bool("disable-high-vad", false, "Disable high VAD sensitivity for Sarvam")
-	disableVADSignals := flag.Bool("disable-vad-signals", false, "Disable VAD signals from Sarvam")
+	enableHighVAD := flag.Bool("enable-high-vad", false, "Enable high VAD sensitivity for Sarvam")
+	enableVADSignals := flag.Bool("enable-vad-signals", true, "Enable VAD signals from Sarvam")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -120,8 +120,8 @@ func main() {
 		CartesiaKey: os.Getenv("CARTESIA_API_KEY"),
 		SarvamKey:   os.Getenv("SARVAM_API_KEY"),
 		SarvamModel: *sarvamModel,
-		HighVAD:     !*disableHighVAD,
-		VADSignals:  !*disableVADSignals,
+		HighVAD:     *enableHighVAD,
+		VADSignals:  *enableVADSignals,
 	}
 
 	provider, languageCode, err := stt.SelectProvider(*languageFlag, cfg)

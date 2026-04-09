@@ -166,7 +166,7 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 	sttCfg := stt.ProviderConfig{
 		CartesiaKey: os.Getenv("CARTESIA_API_KEY"),
 		SarvamKey:   os.Getenv("SARVAM_API_KEY"),
-		HighVAD:     true,
+		HighVAD:     false,
 		VADSignals:  true,
 	}
 

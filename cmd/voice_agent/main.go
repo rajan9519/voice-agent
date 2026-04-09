@@ -42,8 +42,8 @@ func main() {
 		ttsModel              = flag.String("tts-model", "", "Override the TTS model identifier")
 		ttsSampleRate         = flag.Int("tts-sample-rate", 22050, "TTS output sample rate")
 		sttSarvamModel        = flag.String("stt-sarvam-model", "saarika:v2.5", "Sarvam STT model version")
-		sttDisableHighVAD     = flag.Bool("stt-disable-high-vad", false, "Disable high VAD sensitivity for Sarvam STT")
-		sttDisableVADSignals  = flag.Bool("stt-disable-vad-signals", false, "Disable Sarvam VAD speech markers")
+		sttEnableHighVAD      = flag.Bool("stt-enable-high-vad", false, "Enable high VAD sensitivity for Sarvam STT")
+		sttEnableVADSignals   = flag.Bool("stt-enable-vad-signals", true, "Enable Sarvam VAD speech markers")
 		usePartialTranscripts = flag.Bool("use-partials", false, "Forward partial STT transcripts to the agent")
 		flushThreshold        = flag.Int("flush-threshold", 120, "Minimum characters before forcing a TTS flush")
 		llmModel              = flag.String("model", "", "Override the LLM model identifier")
@@ -62,8 +62,8 @@ func main() {
 		CartesiaKey: os.Getenv("CARTESIA_API_KEY"),
 		SarvamKey:   os.Getenv("SARVAM_API_KEY"),
 		SarvamModel: strings.TrimSpace(*sttSarvamModel),
-		HighVAD:     !*sttDisableHighVAD,
-		VADSignals:  !*sttDisableVADSignals,
+		HighVAD:     *sttEnableHighVAD,
+		VADSignals:  *sttEnableVADSignals,
 	}
 
 	var sttProviderInst stt.Provider
