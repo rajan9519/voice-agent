@@ -230,6 +230,7 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 			TranslationModel:      strings.TrimSpace(cfg.Model),
 			FlushThreshold:        cfg.FlushThreshold,
 			UsePartialTranscripts: cfg.UsePartials,
+			EventCallback:         s.onAgentEvent,
 		})
 	default:
 		va, err = agent.NewConversationAgent(sttPipeline, ttsEngine, llmClient, player, agent.ConversationOptions{

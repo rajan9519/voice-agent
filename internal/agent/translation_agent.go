@@ -38,6 +38,8 @@ type TranslationOptions struct {
 	FlushThreshold          int
 	TranscriptQueueCapacity int
 	UsePartialTranscripts   bool
+	// EventCallback, if set, is called for transcript and reply events.
+	EventCallback func(eventType string, text string, isFinal bool)
 }
 
 // TranslationAgent wires STT, LLM translation, and TTS playback into a single pipeline.
@@ -301,6 +303,10 @@ func (a *TranslationAgent) transcriptLoop() {
 						truncate(text, 160),
 					)
 
+					if a.opts.EventCallback != nil {
+						a.opts.EventCallback("transcript", text, false)
+					}
+
 					payload := transcriptPayload{
 						id:                 currentSeq,
 						text:               text,
@@ -343,6 +349,10 @@ func (a *TranslationAgent) transcriptLoop() {
 					duration.Seconds(),
 					truncate(text, 240),
 				)
+
+				if a.opts.EventCallback != nil {
+					a.opts.EventCallback("transcript", text, true)
+				}
 
 				payload := transcriptPayload{
 					id:                 seq,
@@ -493,6 +503,13 @@ func (a *TranslationAgent) translateAndSpeak(payload transcriptPayload) (transla
 	}
 
 	stats.Duration = time.Since(start)
+
+	if !payload.partial {
+		if reply := stats.OutputText(); reply != "" && a.opts.EventCallback != nil {
+			a.opts.EventCallback("reply", reply, true)
+		}
+	}
+
 	return stats, nil
 }
 
