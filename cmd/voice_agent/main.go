@@ -41,7 +41,7 @@ func main() {
 		ttsLanguage           = flag.String("tts-language", "english", "TTS language preset (Sarvam only)")
 		ttsModel              = flag.String("tts-model", "", "Override the TTS model identifier")
 		ttsSampleRate         = flag.Int("tts-sample-rate", 22050, "TTS output sample rate")
-		sttSarvamModel        = flag.String("stt-sarvam-model", "saarika:v2.5", "Sarvam STT model version")
+		sttSarvamModel        = flag.String("stt-sarvam-model", "saaras:v3", "Sarvam STT model version")
 		sttEnableHighVAD      = flag.Bool("stt-enable-high-vad", false, "Enable high VAD sensitivity for Sarvam STT")
 		sttEnableVADSignals   = flag.Bool("stt-enable-vad-signals", true, "Enable Sarvam VAD speech markers")
 		usePartialTranscripts = flag.Bool("use-partials", false, "Forward partial STT transcripts to the agent")
@@ -191,7 +191,7 @@ func configureTTSEngine(providerName, voice, language, model string, sampleRate 
 			return nil, errors.New("tts: SARVAM_API_KEY not set")
 		}
 		voiceID := tts.ResolveSarvamVoice(voice, model)
-		languageCode := tts.ResolveSarvamLanguage(language)
+		languageCode := tts.ResolveSarvamLanguage(language, model)
 		provider := tts.NewSarvamProvider(apiKey, sampleRate, languageCode, model)
 		return tts.New(provider, tts.Options{
 			SampleRate: sampleRate,

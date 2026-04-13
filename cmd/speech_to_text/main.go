@@ -108,7 +108,7 @@ func main() {
 	}
 
 	languageFlag := flag.String("language", "english", "Language for transcription")
-	sarvamModel := flag.String("sarvam-model", "saarika:v2.5", "Sarvam AI model version")
+	sarvamModel := flag.String("sarvam-model", "saaras:v3", "Sarvam AI model version")
 	enableHighVAD := flag.Bool("enable-high-vad", false, "Enable high VAD sensitivity for Sarvam")
 	enableVADSignals := flag.Bool("enable-vad-signals", true, "Enable VAD signals from Sarvam")
 	flag.Parse()

@@ -326,7 +326,7 @@ func (s *Session) configureTTS(cfg SessionConfig) (*tts.TextToSpeech, error) {
 		if lang == "" {
 			lang = cfg.SourceLanguage
 		}
-		languageCode := tts.ResolveSarvamLanguage(lang)
+		languageCode := tts.ResolveSarvamLanguage(lang, cfg.TTSModel)
 		provider := tts.NewSarvamProvider(apiKey, cfg.TTSSampleRate, languageCode, cfg.TTSModel)
 		return tts.New(provider, tts.Options{
 			SampleRate: cfg.TTSSampleRate,

@@ -13,6 +13,8 @@ var (
 		"professional-woman": "b9de4a89-2257-424b-94c2-db18ba68c81a",
 		"storyteller":        "a3520a8f-226a-428d-9c9d-a5e5a1f4c2e0",
 		"conversational-man": "2ee87190-8f84-4925-97da-e52547f9462c",
+		"Katie":              "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+		"Kiefer":             "228fca29-3a0a-435c-8728-5cb483251068",
 	}
 
 	// bulbul:v2 speakers
@@ -62,20 +64,95 @@ var (
 		"default": "aditya",
 	}
 
-	sarvamLanguages = map[string]string{
-		"hindi":     "hi-IN",
-		"bengali":   "bn-IN",
-		"kannada":   "kn-IN",
-		"malayalam": "ml-IN",
-		"marathi":   "mr-IN",
-		"odia":      "od-IN",
-		"punjabi":   "pa-IN",
-		"tamil":     "ta-IN",
-		"telugu":    "te-IN",
-		"gujarati":  "gu-IN",
-		"english":   "en-IN",
+	// cartesiaTTSLanguages maps model → (language name → code)
+	cartesiaTTSLanguages = map[string]map[string]string{
+		"sonic-3": {
+			"english":    "en",
+			"french":     "fr",
+			"german":     "de",
+			"spanish":    "es",
+			"portuguese": "pt",
+			"chinese":    "zh",
+			"japanese":   "ja",
+			"hindi":      "hi",
+			"italian":    "it",
+			"korean":     "ko",
+			"dutch":      "nl",
+			"polish":     "pl",
+			"russian":    "ru",
+			"swedish":    "sv",
+			"turkish":    "tr",
+			"tagalog":    "tl",
+			"bulgarian":  "bg",
+			"romanian":   "ro",
+			"arabic":     "ar",
+			"czech":      "cs",
+			"greek":      "el",
+			"finnish":    "fi",
+			"croatian":   "hr",
+			"malay":      "ms",
+			"slovak":     "sk",
+			"danish":     "da",
+			"tamil":      "ta",
+			"ukrainian":  "uk",
+			"hungarian":  "hu",
+			"norwegian":  "no",
+			"vietnamese": "vi",
+			"bengali":    "bn",
+			"thai":       "th",
+			"hebrew":     "he",
+			"georgian":   "ka",
+			"indonesian": "id",
+			"telugu":     "te",
+			"gujarati":   "gu",
+			"kannada":    "kn",
+			"malayalam":  "ml",
+			"marathi":    "mr",
+			"punjabi":    "pa",
+		},
+	}
+
+	// sarvamTTSLanguages maps model → (language name → BCP-47 code)
+	sarvamTTSLanguages = map[string]map[string]string{
+		"bulbul:v3": {
+			"hindi":     "hi-IN",
+			"bengali":   "bn-IN",
+			"tamil":     "ta-IN",
+			"telugu":    "te-IN",
+			"gujarati":  "gu-IN",
+			"kannada":   "kn-IN",
+			"malayalam": "ml-IN",
+			"marathi":   "mr-IN",
+			"punjabi":   "pa-IN",
+			"odia":      "od-IN",
+			"english":   "en-IN",
+		},
+		"bulbul:v2": {
+			"hindi":     "hi-IN",
+			"bengali":   "bn-IN",
+			"tamil":     "ta-IN",
+			"telugu":    "te-IN",
+			"gujarati":  "gu-IN",
+			"kannada":   "kn-IN",
+			"malayalam": "ml-IN",
+			"marathi":   "mr-IN",
+			"punjabi":   "pa-IN",
+			"odia":      "od-IN",
+			"english":   "en-IN",
+		},
 	}
 )
+
+// ResolveCartesiaLanguage converts friendly language names to Cartesia language codes for the given model.
+func ResolveCartesiaLanguage(name string, modelID string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if langs, ok := cartesiaTTSLanguages[modelID]; ok {
+		if code, ok := langs[key]; ok {
+			return code
+		}
+	}
+	return name
+}
 
 // ResolveCartesiaVoice converts friendly names to Cartesia preset IDs.
 func ResolveCartesiaVoice(name string) string {
@@ -108,11 +185,13 @@ func ResolveSarvamVoice(name string, modelID string) string {
 	return name
 }
 
-// ResolveSarvamLanguage converts preset language names to Sarvam locale codes.
-func ResolveSarvamLanguage(name string) string {
+// ResolveSarvamLanguage converts preset language names to Sarvam locale codes for the given model.
+func ResolveSarvamLanguage(name string, modelID string) string {
 	key := strings.ToLower(strings.TrimSpace(name))
-	if code, ok := sarvamLanguages[key]; ok {
-		return code
+	if langs, ok := sarvamTTSLanguages[modelID]; ok {
+		if code, ok := langs[key]; ok {
+			return code
+		}
 	}
 	return name
 }
