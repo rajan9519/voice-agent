@@ -28,6 +28,28 @@ type voiceAgent interface {
 
 const idleTimeout = 2 * time.Minute
 
+// ttsProviderOrder defines the default fallback precedence for TTS providers when the
+// requested provider does not support the language. Append new providers here as they
+// are added to keep the fallback chain extensible.
+var ttsProviderOrder = []string{"cartesia", "sarvam"}
+
+// sttProviderOrder defines the default fallback precedence for STT providers.
+var sttProviderOrder = []string{"sarvam", "cartesia"}
+
+// buildFallbackOrder returns [requested, ...rest in defaults order] without duplicates.
+// The requested provider is always tried first.
+func buildFallbackOrder(requested string, defaults []string) []string {
+	seen := map[string]bool{requested: true}
+	order := []string{requested}
+	for _, p := range defaults {
+		if !seen[p] {
+			seen[p] = true
+			order = append(order, p)
+		}
+	}
+	return order
+}
+
 // Session manages a single WebSocket voice session.
 type Session struct {
 	conn *websocket.Conn
@@ -170,15 +192,13 @@ func (s *Session) handleSessionStart(cfg SessionConfig) {
 		VADSignals:  true,
 	}
 
-	var sttProv stt.Provider
-	var langCode string
-	var err error
-
-	if cfg.STTProvider != "" {
-		sttProv, langCode, err = stt.SelectProviderExplicit(cfg.STTProvider, cfg.SourceLanguage, sttCfg)
-	} else {
-		sttProv, langCode, err = stt.SelectProvider(cfg.SourceLanguage, sttCfg)
+	// Resolve the STT provider through the precedence-based fallback chain.
+	// When the client doesn't specify a provider, start from the top of sttProviderOrder.
+	requestedSTT := strings.ToLower(strings.TrimSpace(cfg.STTProvider))
+	if requestedSTT == "" {
+		requestedSTT = sttProviderOrder[0]
 	}
+	sttProv, langCode, err := s.resolveSTTProvider(requestedSTT, cfg.SourceLanguage, sttCfg)
 	if err != nil {
 		s.sendError("stt provider: " + err.Error())
 		return
@@ -298,15 +318,78 @@ func (s *Session) onAgentEvent(eventType string, text string, isFinal bool) {
 	}
 }
 
-// configureTTS builds a TTS engine from the session config.
-func (s *Session) configureTTS(cfg SessionConfig) (*tts.TextToSpeech, error) {
-	name := strings.ToLower(strings.TrimSpace(cfg.TTSProvider))
+// resolveSTTProvider tries the requested STT provider for the given language and falls
+// back through sttProviderOrder if the language is not supported by the primary choice.
+func (s *Session) resolveSTTProvider(requested, language string, cfg stt.ProviderConfig) (stt.Provider, string, error) {
+	order := buildFallbackOrder(strings.ToLower(strings.TrimSpace(requested)), sttProviderOrder)
+	var triedErrs []string
+	for _, name := range order {
+		p, code, err := stt.SelectProviderExplicit(name, language, cfg)
+		if err == nil {
+			if name != strings.ToLower(strings.TrimSpace(requested)) {
+				s.logf("STT: language %q not supported by %q, using %q as fallback", language, requested, name)
+			}
+			return p, code, nil
+		}
+		triedErrs = append(triedErrs, name+": "+err.Error())
+	}
+	return nil, "", fmt.Errorf("no provider supports language %q (tried: %s)",
+		language, strings.Join(triedErrs, "; "))
+}
 
+// configureTTS builds a TTS engine from the session config, falling back through
+// ttsProviderOrder if the requested provider does not support the language.
+func (s *Session) configureTTS(cfg SessionConfig) (*tts.TextToSpeech, error) {
+	lang := strings.ToLower(strings.TrimSpace(cfg.TTSLanguage))
+	if lang == "" {
+		lang = strings.ToLower(strings.TrimSpace(cfg.SourceLanguage))
+	}
+
+	requested := strings.ToLower(strings.TrimSpace(cfg.TTSProvider))
+	order := buildFallbackOrder(requested, ttsProviderOrder)
+
+	var triedErrs []string
+	for _, name := range order {
+		tryCfg := cfg
+		if name != requested {
+			// When using a fallback provider, clear model/voice so provider defaults apply.
+			tryCfg.TTSModel = ""
+			tryCfg.TTSVoice = "default"
+		}
+		engine, err := s.tryBuildTTSProvider(name, tryCfg, lang)
+		if err == nil {
+			if name != requested {
+				s.logf("TTS: language %q not supported by %q, using %q as fallback", lang, requested, name)
+			}
+			return engine, nil
+		}
+		triedErrs = append(triedErrs, name+": "+err.Error())
+	}
+	return nil, fmt.Errorf("no TTS provider supports language %q (tried: %s)",
+		lang, strings.Join(triedErrs, "; "))
+}
+
+// tryBuildTTSProvider attempts to construct a TTS engine for a single named provider.
+// It returns an error (without side-effects) when the provider doesn't support the
+// language or the required API key is absent, allowing the caller to try the next one.
+//
+// Language support is detected via the existing Resolve* helpers: if the resolved code
+// equals the (normalised) input name, the language is not in the provider's map.
+func (s *Session) tryBuildTTSProvider(name string, cfg SessionConfig, lang string) (*tts.TextToSpeech, error) {
 	switch name {
 	case "cartesia":
 		apiKey := strings.TrimSpace(os.Getenv("CARTESIA_API_KEY"))
 		if apiKey == "" {
 			return nil, errors.New("CARTESIA_API_KEY not set")
+		}
+		model := cfg.TTSModel
+		if model == "" {
+			model = "sonic-3"
+		}
+		// ResolveCartesiaLanguage returns the original name when the language is unknown.
+		langCode := tts.ResolveCartesiaLanguage(lang, model)
+		if langCode == lang {
+			return nil, fmt.Errorf("language %q not supported by Cartesia (%s)", lang, model)
 		}
 		voiceID := tts.ResolveCartesiaVoice(cfg.TTSVoice)
 		provider := tts.NewCartesiaProvider(apiKey, cfg.TTSSampleRate, cfg.TTSModel)
@@ -321,18 +404,22 @@ func (s *Session) configureTTS(cfg SessionConfig) (*tts.TextToSpeech, error) {
 		if apiKey == "" {
 			return nil, errors.New("SARVAM_API_KEY not set")
 		}
-		voiceID := tts.ResolveSarvamVoice(cfg.TTSVoice, cfg.TTSModel)
-		lang := cfg.TTSLanguage
-		if lang == "" {
-			lang = cfg.SourceLanguage
+		model := cfg.TTSModel
+		if model == "" {
+			model = "bulbul:v2"
 		}
-		languageCode := tts.ResolveSarvamLanguage(lang, cfg.TTSModel)
-		provider := tts.NewSarvamProvider(apiKey, cfg.TTSSampleRate, languageCode, cfg.TTSModel)
+		// ResolveSarvamLanguage returns the original name when the language is unknown.
+		langCode := tts.ResolveSarvamLanguage(lang, model)
+		if langCode == lang {
+			return nil, fmt.Errorf("language %q not supported by Sarvam (%s)", lang, model)
+		}
+		voiceID := tts.ResolveSarvamVoice(cfg.TTSVoice, cfg.TTSModel)
+		provider := tts.NewSarvamProvider(apiKey, cfg.TTSSampleRate, langCode, cfg.TTSModel)
 		return tts.New(provider, tts.Options{
 			SampleRate: cfg.TTSSampleRate,
 			VoiceID:    voiceID,
 			ModelID:    cfg.TTSModel,
-			Language:   languageCode,
+			Language:   langCode,
 		})
 
 	default:
