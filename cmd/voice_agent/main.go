@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -47,8 +48,18 @@ func main() {
 		usePartialTranscripts = flag.Bool("use-partials", false, "Forward partial STT transcripts to the agent")
 		flushThreshold        = flag.Int("flush-threshold", 120, "Minimum characters before forcing a TTS flush")
 		llmModel              = flag.String("model", "", "Override the LLM model identifier")
+		logFile               = flag.String("log-file", "", "Path to log file (logs to stdout only if empty)")
 	)
 	flag.Parse()
+
+	if *logFile != "" {
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("open log file: %v", err)
+		}
+		defer f.Close()
+		log.SetOutput(io.MultiWriter(os.Stdout, f))
+	}
 
 	*mode = strings.TrimSpace(strings.ToLower(*mode))
 	if *mode != "conversation" && *mode != "translation" {
