@@ -1,48 +1,65 @@
 package llm
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
 )
 
+// APIType selects which OpenAI-compatible surface the client speaks to.
+type APIType string
+
 const (
-	defaultBaseURL = "https://api.groq.com/openai/v1"
-	defaultModel   = "llama-3.1-8b-instant"
+	APIChatCompletions APIType = "chat_completions"
+	APIResponses       APIType = "responses"
 )
 
-// Config defines how the LLM client connects to the Groq/OpenAI compatible API.
+const (
+	defaultBaseURL = "https://api.cerebras.ai/v1"
+	defaultModel   = "gpt-oss-120b"
+	defaultAPIType = APIChatCompletions
+)
+
+// Config defines how the LLM client connects to the upstream OpenAI-compatible API.
 type Config struct {
 	APIKey       string
 	BaseURL      string
 	DefaultModel string
+	APIType      APIType
 	HTTPClient   *http.Client
 }
 
-// Client issues streaming Responses API calls.
+// Client is the user-facing entry point. It delegates the actual HTTP/SSE work
+// to a backend that implements either the Chat Completions or Responses API.
 type Client struct {
-	apiKey string
-	model  string
-	url    string
+	model   string
+	backend backend
+}
 
-	httpClient *http.Client
+// backend is the swappable transport for a specific API surface.
+type backend interface {
+	stream(ctx context.Context, model string, messages []Message) (*StreamResponse, error)
 }
 
 // New constructs a streaming LLM client using environment-aware defaults.
+// The API surface (chat_completions vs responses) can be picked via Config.APIType
+// or the LLM_API_TYPE environment variable.
 func New(cfg Config) (*Client, error) {
 	apiKey := strings.TrimSpace(cfg.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	}
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
 	}
 	if apiKey == "" {
-		return nil, errors.New("llm: GROQ_API_KEY must be set")
+		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	}
+	if apiKey == "" {
+		return nil, errors.New("llm: api key must be set (CEREBRAS_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY)")
 	}
 
 	baseURL := strings.TrimSpace(cfg.BaseURL)
@@ -62,19 +79,38 @@ func New(cfg Config) (*Client, error) {
 		model = defaultModel
 	}
 
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{
-			Timeout: 0,
-		}
+	apiType := cfg.APIType
+	if apiType == "" {
+		apiType = APIType(strings.TrimSpace(os.Getenv("LLM_API_TYPE")))
+	}
+	if apiType == "" {
+		apiType = defaultAPIType
 	}
 
-	return &Client{
-		apiKey:     apiKey,
-		model:      model,
-		url:        baseURL + "/responses",
-		httpClient: client,
-	}, nil
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 0}
+	}
+
+	var be backend
+	switch apiType {
+	case APIChatCompletions:
+		be = &chatCompletionsBackend{
+			apiKey:     apiKey,
+			url:        baseURL + "/chat/completions",
+			httpClient: httpClient,
+		}
+	case APIResponses:
+		be = &responsesBackend{
+			apiKey:     apiKey,
+			url:        baseURL + "/responses",
+			httpClient: httpClient,
+		}
+	default:
+		return nil, fmt.Errorf("llm: unsupported APIType %q", apiType)
+	}
+
+	return &Client{model: model, backend: be}, nil
 }
 
 // MessageContent represents an individual content block inside a message.
@@ -83,7 +119,8 @@ type MessageContent struct {
 	Text string `json:"text,omitempty"`
 }
 
-// Message matches the Responses API message schema (role + content blocks).
+// Message is the API-agnostic message shape used by callers; each backend
+// adapts it to the wire format it needs.
 type Message struct {
 	Role    string           `json:"role"`
 	Content []MessageContent `json:"content"`
@@ -101,7 +138,7 @@ type StreamResponse struct {
 	Err  <-chan error
 }
 
-// Stream issues a streaming Responses API call and returns channels for the emitted text deltas.
+// Stream issues a streaming request via the configured backend.
 func (c *Client) Stream(ctx context.Context, req Request) (*StreamResponse, error) {
 	if c == nil {
 		return nil, errors.New("llm: client is nil")
@@ -115,107 +152,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (*StreamResponse, erro
 		model = c.model
 	}
 
-	payload := responsesRequest{
-		Model:  model,
-		Input:  req.Messages,
-		Stream: true,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("llm: marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("llm: build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("llm: request failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-	}
-
-	textCh := make(chan string)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(textCh)
-		defer close(errCh)
-		defer resp.Body.Close()
-
-		reader := bufio.NewReader(resp.Body)
-		for {
-			event, data, readErr := readSSEEvent(reader)
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) || errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-					return
-				}
-				select {
-				case errCh <- fmt.Errorf("llm: stream read: %w", readErr):
-				default:
-				}
-				return
-			}
-
-			switch event {
-			case "":
-				continue
-			case "response.output_text.delta", "response.refusal.delta":
-				var payload responseDelta
-				if err := json.Unmarshal(data, &payload); err != nil {
-					select {
-					case errCh <- fmt.Errorf("llm: decode delta: %w", err):
-					default:
-					}
-					return
-				}
-				if payload.Delta != "" {
-					select {
-					case textCh <- payload.Delta:
-					case <-ctx.Done():
-						return
-					}
-				}
-			case "response.error":
-				var payload responseError
-				if err := json.Unmarshal(data, &payload); err != nil {
-					select {
-					case errCh <- fmt.Errorf("llm: decode error event: %w", err):
-					default:
-					}
-					return
-				}
-				msg := strings.TrimSpace(payload.Error.Message)
-				if msg == "" {
-					msg = "llm request failed"
-				}
-				select {
-				case errCh <- errors.New(msg):
-				default:
-				}
-				return
-			case "response.completed":
-				return
-			default:
-				continue
-			}
-		}
-	}()
-
-	return &StreamResponse{
-		Text: textCh,
-		Err:  errCh,
-	}, nil
+	return c.backend.stream(ctx, model, req.Messages)
 }
 
 // TranslateOptions describe how to build a translation-specific prompt.
@@ -305,84 +242,25 @@ func (c *Client) StreamConverse(ctx context.Context, text string, opts Conversat
 	return c.Stream(ctx, Request{Model: opts.Model, Messages: messages})
 }
 
-type responsesRequest struct {
-	Model  string    `json:"model"`
-	Input  []Message `json:"input"`
-	Stream bool      `json:"stream"`
-}
-
-type responseDelta struct {
-	Type  string `json:"type"`
-	Delta string `json:"delta"`
-}
-
-type responseError struct {
-	Type  string              `json:"type"`
-	Error responseErrorDetail `json:"error"`
+// flattenContent collapses content blocks down to a single string, used by
+// backends whose wire format expects plain string content for text-only messages.
+func flattenContent(parts []MessageContent) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) == 1 {
+		return parts[0].Text
+	}
+	var b strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 type responseErrorDetail struct {
 	Message string `json:"message"`
-}
-
-func readSSEEvent(r *bufio.Reader) (string, []byte, error) {
-	var (
-		event string
-		data  []byte
-	)
-
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) && len(line) == 0 {
-				return "", nil, io.EOF
-			}
-			if len(line) == 0 {
-				return "", nil, err
-			}
-			line = strings.TrimRight(line, "\r\n")
-			if line == "" {
-				break
-			}
-			if strings.HasPrefix(line, "event:") {
-				event = strings.TrimSpace(line[6:])
-			} else if strings.HasPrefix(line, "data:") {
-				data = appendDataLine(data, line[5:])
-			}
-			continue
-		}
-
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			if event == "" && len(data) == 0 {
-				continue
-			}
-			break
-		}
-
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-
-		switch {
-		case strings.HasPrefix(line, "event:"):
-			event = strings.TrimSpace(line[6:])
-		case strings.HasPrefix(line, "data:"):
-			data = appendDataLine(data, line[5:])
-		}
-	}
-
-	if len(data) == 0 {
-		return event, nil, nil
-	}
-
-	return event, data, nil
-}
-
-func appendDataLine(dst []byte, line string) []byte {
-	line = strings.TrimLeft(line, " ")
-	if len(dst) > 0 {
-		dst = append(dst, '\n')
-	}
-	return append(dst, []byte(line)...)
 }
