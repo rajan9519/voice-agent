@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // APIType selects which OpenAI-compatible surface the client speaks to.
@@ -139,6 +140,8 @@ type StreamResponse struct {
 }
 
 // Stream issues a streaming request via the configured backend.
+// On HTTP 429 (rate limit) it retries up to 3 times with exponential backoff
+// starting at 1 second.
 func (c *Client) Stream(ctx context.Context, req Request) (*StreamResponse, error) {
 	if c == nil {
 		return nil, errors.New("llm: client is nil")
@@ -152,7 +155,32 @@ func (c *Client) Stream(ctx context.Context, req Request) (*StreamResponse, erro
 		model = c.model
 	}
 
-	return c.backend.stream(ctx, model, req.Messages)
+	const maxRetries = 3
+	wait := time.Second
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			wait *= 2
+		}
+		sr, err := c.backend.stream(ctx, model, req.Messages)
+		if err == nil {
+			return sr, nil
+		}
+		lastErr = err
+		if !isRateLimitErr(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func isRateLimitErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "429")
 }
 
 // TranslateOptions describe how to build a translation-specific prompt.
